@@ -34,6 +34,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link DeltaDataFile}. */
+// ci-trigger: file change so paths-ignore does not skip the fork run
 class DeltaDataFileTest {
 
     private static final StructType SCHEMA =
