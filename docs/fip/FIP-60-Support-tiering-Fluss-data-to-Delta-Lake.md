@@ -35,7 +35,8 @@ We split the work into three phases, same as FIP-24 did for Hudi. This document 
   - `datalake.delta.warehouse` (required). Root path of the Delta tables. Fluss table `db.tbl` becomes the path-based Delta table `<warehouse>/db/tbl`.
   - `datalake.delta.write.batch-size` (default `100000`). How many rows the writer buffers before writing a Parquet file. Can be overridden per table with the custom property `write.batch-size`. This option is only used by Fluss, it is not written to the Delta table (different from the `delta.*` properties below).
   - All other options under `datalake.delta.*` go to the Hadoop `Configuration` of the Kernel engine. File system credentials (`fs.s3a.*` etc.) are set here.
-- Custom table properties starting with `delta.` are passed to the Delta table as table properties when the table is created, e.g. `delta.logRetentionDuration`. Other Fluss properties stay in Fluss.
+- Table properties follow the same two rules as Paimon, Iceberg and Hudi. Custom properties starting with `delta.` are passed to the Delta table as they are, e.g. `delta.logRetentionDuration`. Delta's own properties already use this prefix, so nothing is stripped (for Paimon and Iceberg the `paimon.` / `iceberg.` prefix is removed). All other Fluss table properties are written to the Delta table with a `fluss.` prefix, e.g. `table.datalake.enabled` becomes `fluss.table.datalake.enabled`. They are only informational, Fluss never reads them back, but `DESCRIBE DETAIL` shows how the table is configured in Fluss.
+- `write.batch-size` has no prefix because it is a Fluss writer option and not a Delta table property. This follows Lance, which uses the unprefixed `batch_size` for the same purpose.
 - No changes to existing public APIs or storage formats.
 
 ## Proposed Changes
@@ -45,9 +46,20 @@ We split the work into three phases, same as FIP-24 did for Hudi. This document 
 Some decisions affect the whole design, so we list them first.
 
 1. The written tables must be standard Delta tables. Any Delta reader should be able to read them without Fluss jar. So the only Delta dependency is Delta Kernel (`delta-kernel-api` + `delta-kernel-defaults`, 4.4.1), and phase 1 only uses its public API. Kernel is the recommended way for new connectors in Delta project, it has no Spark dependency, and it is already used by the Flink and Trino Delta connectors.
-2. Bucketing stays on Fluss side, same as Lance. Delta has no bucketing spec, so there is nothing we can reuse. We keep `FlussBucketingFunction` and the compacted key encoder/decoder. Iceberg and Paimon adopt the bucket function of the lake, this is not possible for Delta.
+2. Bucketing stays on Fluss side, same as Lance. Delta has no bucketing spec, so there is nothing we can reuse. See the Bucketing section below.
 3. Tiering progress is stored in the Delta commit itself. The bucket offsets of one round go into the same commit as the data files, so they become visible together and recovery can read the offsets back from the log.
 4. Fail fast. Anything that Delta cannot express, or phase 1 does not handle, fails when the Fluss table is created with datalake enabled, not later in the tiering job after several hours.
+
+### Bucketing
+
+Iceberg and Paimon make Fluss use the bucket function of the lake, so one Fluss bucket is also one bucket on the lake side and the reader can seek into it. Delta has no bucket transform and no partition transform, only plain partition columns and liquid clustering, and clustering is only a hint to the writer. So there is nothing on the Delta side a Fluss bucket could map to.
+
+Fluss therefore keeps its default bucketing for Delta tables, same as Lance:
+
+- `FlussBucketingFunction` and the default key encoder are used. Setting `datalake.format: delta` does not change how bucket keys are encoded. The datalake encoder described in `table.datalake.format` only exists for Paimon and Iceberg.
+- Tables with no bucket key, one bucket key or several bucket keys all work the same way. Iceberg has to reject several bucket keys, Delta does not.
+- Because the bucketing does not depend on the lake, `table.datalake.enabled` can be turned on later for an existing table without rewriting data. This is different from Iceberg, where a table that was created with the Fluss bucketing cannot enable datalake afterwards.
+- A Delta tiered table is partitioned only by the Fluss partition keys. The bucket is not visible in the Delta layout. One Parquet file always contains data of one bucket, because one writer handles one bucket, but Delta readers do not know this. Phase 2 may record the bucket in the `add` action tags, see below.
 
 ### Module layout
 
@@ -84,10 +96,10 @@ The created Delta table:
 
 - The Delta schema is the Fluss row type, mapped as the table below. It only contains user columns. Following FIP-27 there are no `__bucket` / `__offset` / `__timestamp` columns, Delta only has the clean layout, same as Hudi. The three names are still reserved, but the coordinator already rejects them for every table no matter which lake format (`TableDescriptorValidation`), so Delta catalog does not need to check it again.
 - Partition keys become Delta partition columns, one to one, via `DataLayoutSpec.partitioned(...)`.
-- The table is created with `TableManager.buildCreateTableTransaction(path, schema, "Apache-Fluss")`. We enable the `domainMetadata` writer feature (`delta.feature.domainMetadata = supported`) and add every `delta.*` custom property of the Fluss table.
+- The table is created with `TableManager.buildCreateTableTransaction(path, schema, "Apache-Fluss")`. We enable the `domainMetadata` writer feature (`delta.feature.domainMetadata = supported`) and add every `delta.*` custom property of the Fluss table, and the other Fluss properties with the `fluss.` prefix as described in Public Interfaces.
 - If a Delta table already exists at that path (usually a retry of same create request), we accept it when schema, partition columns and the `domainMetadata` feature match, otherwise throw `TableAlreadyExistException`. So `createTable` can be retried safely, and it will not silently reuse a table created by someone else.
 
-`alterTable` supports very few things on purpose. Fluss side options (`table.datalake.freshness` etc.) can be set and reset. A `delta.*` property can only be set when the value is same as the current value in the Delta table. Schema change, bucket count change and lake path change are rejected with "not supported yet". Schema evolution for Delta side is future work.
+`alterTable` supports very few things on purpose. Fluss side options (`table.datalake.freshness` etc.) can be set and reset, the mirrored `fluss.*` property is updated in one metadata-only Delta commit. A `delta.*` property can only be set when the value is same as the current value in the Delta table. Schema change, bucket count change and lake path change are rejected with "not supported yet". Schema evolution for Delta side is future work.
 
 ### Type mapping
 
