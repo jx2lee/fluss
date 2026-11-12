@@ -1,15 +1,16 @@
-# FIP-60: Support tiering Fluss data to Delta Lake
+# FIP-62: Support tiering Fluss data to Delta Lake
 
-> Draft. FIP-59 is the highest number on the wiki as of 2026-11-05, so 60 is a guess. Check again before copying this to Confluence.
+> Draft. FIP-61 is the highest number on the wiki as of 2026-11-12 (FIP-60 is Schema Evolution), so 62 is the next free one. Check again before copying this to Confluence.
 
 Document the state by adding a label to the FIP page with one of "discussion", "accepted", "released", "rejected".
 
 | | |
 |---|---|
-| Discussion thread | here (<- link to https://lists.apache.org/list.html?dev@fluss.apache.org) |
-| Vote thread | here (<- link to https://lists.apache.org/list.html?dev@fluss.apache.org) |
+| Status | Draft |
+| Discussion thread | Not started |
+| Vote thread | Not started |
 | ISSUE | https://github.com/apache/fluss/issues/967 |
-| Release | <Fluss Version> |
+| Release | To be determined |
 
 Please keep the discussion on the mailing list rather than commenting on the wiki (wiki discussions get unwieldy fast).
 
