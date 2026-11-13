@@ -1,0 +1,99 @@
+diff --git a/fluss-common/src/main/java/org/apache/fluss/config/TableConfig.java b/fluss-common/src/main/java/org/apache/fluss/config/TableConfig.java
+index 1fc82dedb..257bc2e21 100644
+--- a/fluss-common/src/main/java/org/apache/fluss/config/TableConfig.java
++++ b/fluss-common/src/main/java/org/apache/fluss/config/TableConfig.java
+@@ -227,13 +227,16 @@ public class TableConfig {
+         if (columnsStr == null) {
+             return StatisticsColumnsConfig.disabled();
+         }
+-        if ("*".equals(columnsStr)) {
++        // Keep in sync with StatisticsConfigUtils#validateStatisticsConfig, which accepts the
++        // wildcard surrounded by whitespace.
++        if ("*".equals(columnsStr.trim())) {
+             return StatisticsColumnsConfig.all();
+         }
+         List<String> columns =
+                 Arrays.stream(columnsStr.split(","))
+                         .map(String::trim)
+                         .filter(s -> !s.isEmpty())
++                        .distinct()
+                         .collect(Collectors.toList());
+         return StatisticsColumnsConfig.of(columns);
+     }
+diff --git a/fluss-common/src/test/java/org/apache/fluss/config/StatisticsConfigUtilsTest.java b/fluss-common/src/test/java/org/apache/fluss/config/StatisticsConfigUtilsTest.java
+index 04e5f9007..376ee9b8b 100644
+--- a/fluss-common/src/test/java/org/apache/fluss/config/StatisticsConfigUtilsTest.java
++++ b/fluss-common/src/test/java/org/apache/fluss/config/StatisticsConfigUtilsTest.java
+@@ -20,6 +20,9 @@ package org.apache.fluss.config;
+ import org.apache.fluss.exception.InvalidConfigException;
+ import org.apache.fluss.metadata.Schema;
+ import org.apache.fluss.metadata.TableDescriptor;
++import org.apache.fluss.metadata.TableInfo;
++import org.apache.fluss.metadata.TablePath;
++import org.apache.fluss.record.LogRecordBatchStatisticsCollector;
+ import org.apache.fluss.types.DataTypes;
+ 
+ import org.junit.jupiter.api.Test;
+@@ -147,6 +150,62 @@ class StatisticsConfigUtilsTest {
+                 .hasMessageContaining("is not supported for statistics collection");
+     }
+ 
++    @Test
++    void testWildcardWithSurroundingWhitespaceIsTreatedAsAllColumns() {
++        // Only id(INT) and name(STRING) are supported statistics types in TEST_SCHEMA.
++        for (String wildcard : new String[] {" *", "* ", " * "}) {
++            TableDescriptor descriptor =
++                    TableDescriptor.builder()
++                            .schema(TEST_SCHEMA)
++                            .distributedBy(3)
++                            .property(ConfigOptions.TABLE_STATISTICS_COLUMNS.key(), wildcard)
++                            .build();
++
++            assertThatNoException()
++                    .isThrownBy(() -> StatisticsConfigUtils.validateStatisticsConfig(descriptor));
++
++            // The value accepted by validation must also be usable at runtime.
++            TableInfo tableInfo =
++                    TableInfo.of(TablePath.of("db", "t"), 1L, 1, descriptor, "/tmp", 0L, 0L);
++            assertThat(tableInfo.getTableConfig().getStatisticsColumns().getMode())
++                    .isEqualTo(StatisticsColumnsConfig.Mode.ALL);
++            assertThat(tableInfo.getStatsIndexMapping()).containsExactly(0, 1);
++            // The client creates this collector for every batch it appends.
++            assertThatNoException()
++                    .isThrownBy(
++                            () ->
++                                    new LogRecordBatchStatisticsCollector(
++                                            tableInfo.getRowType(),
++                                            tableInfo.getStatsIndexMapping()));
++        }
++    }
++
++    @Test
++    void testDuplicateColumnsAreDeduplicated() {
++        TableDescriptor descriptor =
++                TableDescriptor.builder()
++                        .schema(TEST_SCHEMA)
++                        .distributedBy(3)
++                        .property(ConfigOptions.TABLE_STATISTICS_COLUMNS.key(), "id, name, id")
++                        .build();
++
++        assertThatNoException()
++                .isThrownBy(() -> StatisticsConfigUtils.validateStatisticsConfig(descriptor));
++
++        // A duplicated column must not produce a duplicated statistics field, which would make
++        // the statistics row type invalid and fail every append.
++        TableInfo tableInfo =
++                TableInfo.of(TablePath.of("db", "t"), 1L, 1, descriptor, "/tmp", 0L, 0L);
++        assertThat(tableInfo.getTableConfig().getStatisticsColumns().getColumns())
++                .containsExactly("id", "name");
++        assertThat(tableInfo.getStatsIndexMapping()).containsExactly(0, 1);
++        assertThatNoException()
++                .isThrownBy(
++                        () ->
++                                new LogRecordBatchStatisticsCollector(
++                                        tableInfo.getRowType(), tableInfo.getStatsIndexMapping()));
++    }
++
+     @Test
+     void testTableConfigStatisticsColumnsDisabled() {
+         // Not set -> DISABLED

@@ -1,0 +1,86 @@
+diff --git a/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java b/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java
+index 8548b1015..44f6bc0c2 100644
+--- a/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java
++++ b/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java
+@@ -116,8 +116,25 @@ public final class LocalLog {
+         flushCount = serverMetricGroup.logFlushCount();
+         flushLatencyHistogram = serverMetricGroup.logFlushLatencyHistogram();
+         localLogStartOffset = segments.isEmpty() ? 0L : segments.firstSegmentBaseOffset().get();
+-        localMaxTimestamp =
+-                segments.isEmpty() ? 0L : segments.lastSegment().get().maxTimestampSoFar();
++        localMaxTimestamp = segments.isEmpty() ? 0L : latestMaxTimestamp(segments);
++    }
++
++    /**
++     * Returns the max timestamp of the latest non-empty segment, or -1 if all segments are empty.
++     *
++     * <p>The active segment can be empty while older segments still hold data, e.g. after the TTL
++     * cleanup rolled the active segment of an idle bucket, so empty segments are skipped. Only as
++     * many segments as needed are inspected, because this may materialize their time indexes.
++     */
++    private static long latestMaxTimestamp(LogSegments segments) throws IOException {
++        List<LogSegment> values = segments.values();
++        for (int i = values.size() - 1; i >= 0; i--) {
++            LogSegment segment = values.get(i);
++            if (segment.getSizeInBytes() > 0) {
++                return segment.maxTimestampSoFar();
++            }
++        }
++        return -1L;
+     }
+ 
+     LogSegments getSegments() {
+diff --git a/fluss-server/src/test/java/org/apache/fluss/server/log/LogTabletTest.java b/fluss-server/src/test/java/org/apache/fluss/server/log/LogTabletTest.java
+index 5484d4bb0..f67cf5092 100644
+--- a/fluss-server/src/test/java/org/apache/fluss/server/log/LogTabletTest.java
++++ b/fluss-server/src/test/java/org/apache/fluss/server/log/LogTabletTest.java
+@@ -119,6 +119,49 @@ final class LogTabletTest extends LogTestBase {
+         scheduler.shutdown();
+     }
+ 
++    @Test
++    void testLocalMaxTimestampIsRestoredWhenActiveSegmentIsEmpty() throws Exception {
++        logTablet.appendAsLeader(genMemoryLogRecordsByObject(DATA1));
++        long maxTimestamp = logTablet.localMaxTimestamp();
++        assertThat(maxTimestamp).isGreaterThan(0L);
++
++        // Rolling leaves an empty active segment, e.g. when the TTL cleanup rolls an expired
++        // active segment of an idle bucket.
++        logTablet.roll(Optional.empty());
++        assertThat(logTablet.activeLogSegment().getSizeInBytes()).isZero();
++        assertThat(logTablet.localMaxTimestamp()).isEqualTo(maxTimestamp);
++        logTablet.flush(true);
++        logTablet.close();
++
++        // Reload the log, as a tablet server restart does.
++        LogTablet reloaded =
++                LogTablet.create(
++                        tempDir,
++                        PhysicalTablePath.of(DATA1_TABLE_PATH),
++                        logDir,
++                        conf,
++                        new AtomicBoolean(
++                                conf.get(ConfigOptions.LOG_RETENTION_ROLL_ACTIVE_SEGMENT_ENABLED)),
++                        TestingMetricGroups.TABLET_SERVER_METRICS,
++                        0,
++                        scheduler,
++                        LogFormat.ARROW,
++                        1,
++                        false,
++                        SystemClock.getInstance(),
++                        true);
++        try {
++            assertThat(reloaded.logSegments()).hasSize(2);
++            // The data is still there and can be found by timestamp ...
++            assertThat(reloaded.lookupOffsetForTimestamp(maxTimestamp)).isEqualTo(0L);
++            // ... so the local max timestamp must not regress to -1, otherwise list offsets by
++            // timestamp short-circuits to the latest offset (see Replica#getOffsetByTimestamp).
++            assertThat(reloaded.localMaxTimestamp()).isEqualTo(maxTimestamp);
++        } finally {
++            reloaded.close();
++        }
++    }
++
+     @Test
+     void testRemoteLogOffsetsCanResetAfterEmptyManifest() {
+         logTablet.updateRemoteLogOffsets(0L, 10L, 10L);

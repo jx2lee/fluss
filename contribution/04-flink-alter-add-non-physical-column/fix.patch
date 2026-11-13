@@ -1,0 +1,104 @@
+diff --git a/fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/utils/FlinkConversions.java b/fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/utils/FlinkConversions.java
+index 0066f3e02..0b0cb50c9 100644
+--- a/fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/utils/FlinkConversions.java
++++ b/fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/utils/FlinkConversions.java
+@@ -444,6 +444,13 @@ public class FlinkConversions {
+             org.apache.flink.table.catalog.TableChange.AddColumn addColumn =
+                     (org.apache.flink.table.catalog.TableChange.AddColumn) tableChange;
+             Column column = addColumn.getColumn();
++            if (!column.isPhysical()) {
++                // Computed and metadata columns would otherwise be added as physical columns,
++                // which cannot be dropped afterwards.
++                throw new UnsupportedOperationException(
++                        String.format(
++                                "Adding non-physical column %s is not supported yet.", column));
++            }
+             return Collections.singletonList(
+                     TableChange.addColumn(
+                             column.getName(),
+diff --git a/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/catalog/FlinkCatalogITCase.java b/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/catalog/FlinkCatalogITCase.java
+index 66202310a..30853d9c9 100644
+--- a/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/catalog/FlinkCatalogITCase.java
++++ b/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/catalog/FlinkCatalogITCase.java
+@@ -82,6 +82,7 @@ import static org.apache.fluss.flink.source.testutils.FlinkRowAssertionsUtils.as
+ import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
+ import static org.assertj.core.api.Assertions.assertThat;
+ import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.assertj.core.api.Assertions.catchThrowable;
+ 
+ /** IT case for {@link org.apache.fluss.flink.catalog.FlinkCatalog}. */
+ abstract class FlinkCatalogITCase {
+@@ -874,6 +875,35 @@ abstract class FlinkCatalogITCase {
+         }
+     }
+ 
++    @Test
++    void testAlterTableAddNonPhysicalColumn() throws Exception {
++        String tableName = "test_alter_add_non_physical_column";
++        ObjectPath tablePath = new ObjectPath(DEFAULT_DB, tableName);
++        tEnv.executeSql(
++                String.format(
++                        "CREATE TABLE %s (id BIGINT, a INT, PRIMARY KEY (id) NOT ENFORCED)",
++                        tableName));
++
++        String[] alterStatements = {
++            String.format("ALTER TABLE %s ADD c AS a + 1", tableName),
++            String.format(
++                    "ALTER TABLE %s ADD m TIMESTAMP_LTZ(3) METADATA FROM 'timestamp'", tableName)
++        };
++        for (String alter : alterStatements) {
++            Throwable error = catchThrowable(() -> tEnv.executeSql(alter));
++
++            // The non-physical column must not end up as a physical Fluss column.
++            CatalogTable table = (CatalogTable) catalog.getTable(tablePath);
++            assertThat(table.getUnresolvedSchema().getColumns())
++                    .as("columns after: %s", alter)
++                    .extracting(Schema.UnresolvedColumn::getName)
++                    .containsExactly("id", "a");
++            assertThat(error)
++                    .as("error of: %s", alter)
++                    .hasStackTraceContaining("Adding non-physical column");
++        }
++    }
++
+     @Test
+     void testAlterTableWatermark() throws Exception {
+         String tableName = "test_watermark_table";
+diff --git a/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/utils/FlinkConversionsTest.java b/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/utils/FlinkConversionsTest.java
+index 67f843a72..7b027971e 100644
+--- a/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/utils/FlinkConversionsTest.java
++++ b/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/utils/FlinkConversionsTest.java
+@@ -95,6 +95,33 @@ public class FlinkConversionsTest {
+                 .hasMessageContaining("Bucket count must be positive");
+     }
+ 
++    @Test
++    void testAddNonPhysicalColumnIsNotConvertedToPhysicalColumn() {
++        // ALTER TABLE t ADD m TIMESTAMP_LTZ(3) METADATA FROM 'timestamp'
++        org.apache.flink.table.catalog.TableChange addMetadata =
++                org.apache.flink.table.catalog.TableChange.add(
++                        Column.metadata(
++                                "m",
++                                org.apache.flink.table.api.DataTypes.TIMESTAMP_LTZ(3),
++                                "timestamp",
++                                false));
++        assertThatThrownBy(() -> FlinkConversions.toFlussTableChanges(addMetadata))
++                .isInstanceOf(UnsupportedOperationException.class)
++                .hasMessageContaining("m");
++
++        // ALTER TABLE t ADD c AS a + 1
++        org.apache.flink.table.catalog.TableChange addComputed =
++                org.apache.flink.table.catalog.TableChange.add(
++                        Column.computed(
++                                "c",
++                                new ResolvedExpressionMock(
++                                        org.apache.flink.table.api.DataTypes.INT(),
++                                        () -> "`a` + 1")));
++        assertThatThrownBy(() -> FlinkConversions.toFlussTableChanges(addComputed))
++                .isInstanceOf(UnsupportedOperationException.class)
++                .hasMessageContaining("c");
++    }
++
+     @Test
+     void testTypeConversion() {
+         // create a list with all fluss data types

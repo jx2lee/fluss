@@ -1,0 +1,101 @@
+diff --git a/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java b/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java
+index 8548b1015..aff7db846 100644
+--- a/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java
++++ b/fluss-server/src/main/java/org/apache/fluss/server/log/LocalLog.java
+@@ -467,6 +467,12 @@ public final class LocalLog {
+                     readOffset = lastFilteredEndOffset;
+                     fetchDataInfo = null;
+                     filteredSegmentsScanned++;
++                    if (readOffset >= maxOffsetMetadata.getMessageOffset()) {
++                        // Reached the max offset (e.g. the high watermark). Later segments only
++                        // hold data beyond it and must not be read: their max position is the
++                        // segment size, not the max offset position.
++                        break;
++                    }
+                     if (filteredSegmentsScanned >= MAX_FILTER_SCAN_SEGMENTS) {
+                         // Stop scanning to bound the I/O cost per fetch request.
+                         // The client will retry from lastFilteredEndOffset.
+diff --git a/fluss-server/src/test/java/org/apache/fluss/server/log/LocalLogTest.java b/fluss-server/src/test/java/org/apache/fluss/server/log/LocalLogTest.java
+index ecf76895d..1701cbadc 100644
+--- a/fluss-server/src/test/java/org/apache/fluss/server/log/LocalLogTest.java
++++ b/fluss-server/src/test/java/org/apache/fluss/server/log/LocalLogTest.java
+@@ -528,6 +528,79 @@ final class LocalLogTest extends LogTestBase {
+         }
+     }
+ 
++    @Test
++    void testReadWithFilterDoesNotReadBeyondMaxOffsetInLaterSegment() throws Exception {
++        // Segment 1: batch offsets 0-2 (values 1,2,3) is below the high watermark, batch offsets
++        // 3-5 (values 6,7,8) is above the high watermark.
++        MemoryLogRecords committed =
++                LogRecordBatchStatisticsTestUtils.createLogRecordsWithStatistics(
++                        Arrays.asList(
++                                new Object[] {1, "a"},
++                                new Object[] {2, "b"},
++                                new Object[] {3, "c"}),
++                        DATA1_ROW_TYPE,
++                        0L,
++                        DEFAULT_SCHEMA_ID);
++        localLog.append(2, -1L, 0L, committed);
++        localLog.append(
++                5,
++                -1L,
++                0L,
++                LogRecordBatchStatisticsTestUtils.createLogRecordsWithStatistics(
++                        Arrays.asList(
++                                new Object[] {6, "d"},
++                                new Object[] {7, "e"},
++                                new Object[] {8, "f"}),
++                        DATA1_ROW_TYPE,
++                        3L,
++                        DEFAULT_SCHEMA_ID));
++        localLog.roll(Optional.empty());
++
++        // Segment 2: batch offsets 6-8 (values 7,8,9), entirely above the high watermark.
++        localLog.append(
++                8,
++                -1L,
++                0L,
++                LogRecordBatchStatisticsTestUtils.createLogRecordsWithStatistics(
++                        Arrays.asList(
++                                new Object[] {7, "g"},
++                                new Object[] {8, "h"},
++                                new Object[] {9, "i"}),
++                        DATA1_ROW_TYPE,
++                        6L,
++                        DEFAULT_SCHEMA_ID));
++        assertThat(localLog.getSegments().numberOfSegments()).isEqualTo(2);
++
++        // The high watermark is 3, located in segment 1 right after the first batch.
++        LogOffsetMetadata highWatermark = new LogOffsetMetadata(3L, 0L, committed.sizeInBytes());
++        Predicate filter = new PredicateBuilder(DATA1_ROW_TYPE).greaterThan(0, 5);
++
++        try (LogRecordReadContext readContext =
++                LogRecordReadContext.createArrowReadContext(
++                        DATA1_ROW_TYPE, DEFAULT_SCHEMA_ID, TEST_SCHEMA_GETTER)) {
++            FetchDataInfo result =
++                    localLog.read(
++                            0,
++                            Integer.MAX_VALUE,
++                            false,
++                            highWatermark,
++                            null,
++                            new FilterContext(
++                                    filter, readContext, DEFAULT_SCHEMA_ID, TEST_SCHEMA_GETTER));
++
++            // Nothing below the high watermark matches, and nothing above it may be returned.
++            for (LogRecordBatch batch : result.getRecords().batches()) {
++                assertThat(batch.lastLogOffset())
++                        .as(
++                                "batch [%s, %s] read beyond high watermark 3",
++                                batch.baseLogOffset(), batch.lastLogOffset())
++                        .isLessThan(3L);
++            }
++            assertThat(result.getRecords().sizeInBytes()).isEqualTo(0);
++            assertThat(result.getFilteredEndOffset()).isEqualTo(3L);
++        }
++    }
++
+     @Test
+     void testReadWithFilterAllSegmentsFilteredOut() throws Exception {
+         // Segment 1 (offsets 0-2): values 1,2,3

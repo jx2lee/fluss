@@ -1,0 +1,153 @@
+diff --git a/fluss-client/src/main/java/org/apache/fluss/client/table/writer/MultiTableWriterImpl.java b/fluss-client/src/main/java/org/apache/fluss/client/table/writer/MultiTableWriterImpl.java
+index 513378028..d3f64f57a 100644
+--- a/fluss-client/src/main/java/org/apache/fluss/client/table/writer/MultiTableWriterImpl.java
++++ b/fluss-client/src/main/java/org/apache/fluss/client/table/writer/MultiTableWriterImpl.java
+@@ -435,13 +435,15 @@ class MultiTableWriterImpl implements MultiTableWriter {
+                             tableInfo.getPhysicalPrimaryKeys(),
+                             tableInfo.getTableConfig(),
+                             tableInfo.isDefaultBucketKey());
++            // Reuses the primary key encoder only when its encoding is valid for bucketing, which
++            // is not the case for Hudi tables (same as UpsertWriterImpl via BucketCalculator).
+             this.kvBucketKeyEncoder =
+-                    tableInfo.isDefaultBucketKey()
+-                            ? this.primaryKeyEncoder
+-                            : KeyEncoder.ofBucketKeyEncoder(
+-                                    rowType,
+-                                    tableInfo.getBucketKeys(),
+-                                    tableInfo.getTableConfig().getDataLakeFormat().orElse(null));
++                    KeyEncoder.ofBucketKeyEncoder(
++                            rowType,
++                            tableInfo.getBucketKeys(),
++                            tableInfo.getTableConfig(),
++                            tableInfo.isDefaultBucketKey(),
++                            this.primaryKeyEncoder);
+             this.kvFormat = tableInfo.getTableConfig().getKvFormat();
+             this.kvWriteFormat = WriteFormat.fromKvFormat(this.kvFormat);
+             this.kvRowEncoder = RowEncoder.create(this.kvFormat, rowType);
+diff --git a/fluss-client/src/test/java/org/apache/fluss/client/table/writer/MultiTableWriterLakeFormatITCase.java b/fluss-client/src/test/java/org/apache/fluss/client/table/writer/MultiTableWriterLakeFormatITCase.java
+new file mode 100644
+index 000000000..703dd0e41
+--- /dev/null
++++ b/fluss-client/src/test/java/org/apache/fluss/client/table/writer/MultiTableWriterLakeFormatITCase.java
+@@ -0,0 +1,121 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.fluss.client.table.writer;
++
++import org.apache.fluss.client.Connection;
++import org.apache.fluss.client.ConnectionFactory;
++import org.apache.fluss.client.admin.Admin;
++import org.apache.fluss.client.lookup.Lookuper;
++import org.apache.fluss.client.table.Table;
++import org.apache.fluss.config.ConfigOptions;
++import org.apache.fluss.metadata.DataLakeFormat;
++import org.apache.fluss.metadata.DatabaseDescriptor;
++import org.apache.fluss.metadata.Schema;
++import org.apache.fluss.metadata.TableBucket;
++import org.apache.fluss.metadata.TableDescriptor;
++import org.apache.fluss.metadata.TablePath;
++import org.apache.fluss.row.InternalRow;
++import org.apache.fluss.server.testutils.FlussClusterExtension;
++import org.apache.fluss.types.DataTypes;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.extension.RegisterExtension;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.EnumSource;
++
++import static org.apache.fluss.testutils.DataTestUtils.row;
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * ITCase for {@link MultiTableWriter} on primary key tables declaring a lake format, where the
++ * bucket key encoding may differ from the primary key encoding.
++ */
++class MultiTableWriterLakeFormatITCase {
++
++    private static final String DATABASE = "test_mt_writer_lake_db";
++    private static final int NUM_BUCKETS = 3;
++
++    @RegisterExtension
++    public static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
++            FlussClusterExtension.builder().setNumOfTabletServers(1).build();
++
++    private Connection conn;
++    private Admin admin;
++
++    @BeforeEach
++    void setup() throws Exception {
++        conn = ConnectionFactory.createConnection(FLUSS_CLUSTER_EXTENSION.getClientConfig());
++        admin = conn.getAdmin();
++        admin.createDatabase(DATABASE, DatabaseDescriptor.EMPTY, true).get();
++    }
++
++    @AfterEach
++    void teardown() throws Exception {
++        if (admin != null) {
++            admin.close();
++        }
++        if (conn != null) {
++            conn.close();
++        }
++    }
++
++    @ParameterizedTest
++    @EnumSource(DataLakeFormat.class)
++    void testUpsertPkTableWithDefaultBucketKey(DataLakeFormat lakeFormat) throws Exception {
++        TablePath tablePath = TablePath.of(DATABASE, "pk_" + lakeFormat.toString());
++        TableDescriptor descriptor =
++                TableDescriptor.builder()
++                        .schema(
++                                Schema.newBuilder()
++                                        .column("id", DataTypes.INT())
++                                        .column("name", DataTypes.STRING())
++                                        .primaryKey("id")
++                                        .build())
++                        .distributedBy(NUM_BUCKETS)
++                        .property(ConfigOptions.TABLE_DATALAKE_FORMAT, lakeFormat)
++                        .build();
++        admin.createTable(tablePath, descriptor, false).get();
++        long tableId = admin.getTableInfo(tablePath).get().getTableId();
++        for (int bucket = 0; bucket < NUM_BUCKETS; bucket++) {
++            FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(new TableBucket(tableId, bucket));
++        }
++        int schemaId = admin.getTableInfo(tablePath).get().getSchemaId();
++
++        int recordCount = 20;
++        try (MultiTableWriter writer = conn.getMultiTable().newMultiTableWrite().createWriter()) {
++            for (int i = 0; i < recordCount; i++) {
++                writer.write(MultiTableWriteRecord.forUpsert(tablePath, row(i, "v" + i), schemaId))
++                        .get();
++            }
++            writer.flush();
++        }
++
++        // Rows must be routed to the same buckets as UpsertWriter does, so that the regular
++        // lookuper finds every key.
++        try (Table table = conn.getTable(tablePath)) {
++            Lookuper lookuper = table.newLookup().createLookuper();
++            for (int i = 0; i < recordCount; i++) {
++                InternalRow found = lookuper.lookup(row(i)).get().getSingletonRow();
++                assertThat(found).as("lookup of key %s", i).isNotNull();
++                assertThat(found.getString(1).toString()).isEqualTo("v" + i);
++            }
++        }
++    }
++}

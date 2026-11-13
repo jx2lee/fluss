@@ -1,0 +1,63 @@
+diff --git a/fluss-common/src/main/java/org/apache/fluss/predicate/StartsWith.java b/fluss-common/src/main/java/org/apache/fluss/predicate/StartsWith.java
+index 33c97dee5..7661cd9e4 100644
+--- a/fluss-common/src/main/java/org/apache/fluss/predicate/StartsWith.java
++++ b/fluss-common/src/main/java/org/apache/fluss/predicate/StartsWith.java
+@@ -53,9 +53,11 @@ public class StartsWith extends NullFalseLeafBinaryFunction {
+             Object max,
+             long nullCount,
+             Object patternLiteral) {
+-        String minStr = min.toString();
+-        String maxStr = max.toString();
+-        String pattern = patternLiteral.toString();
++        // Compare as BinaryString (UTF-8 byte order) to match how min/max statistics are
++        // collected; java.lang.String uses UTF-16 order, which differs for supplementary chars.
++        BinaryString minStr = (BinaryString) min;
++        BinaryString maxStr = (BinaryString) max;
++        BinaryString pattern = (BinaryString) patternLiteral;
+         return (minStr.startsWith(pattern) || minStr.compareTo(pattern) <= 0)
+                 && (maxStr.startsWith(pattern) || maxStr.compareTo(pattern) >= 0);
+     }
+diff --git a/fluss-common/src/test/java/org/apache/fluss/predicate/PredicateTest.java b/fluss-common/src/test/java/org/apache/fluss/predicate/PredicateTest.java
+index 952d41b50..080755651 100644
+--- a/fluss-common/src/test/java/org/apache/fluss/predicate/PredicateTest.java
++++ b/fluss-common/src/test/java/org/apache/fluss/predicate/PredicateTest.java
+@@ -17,6 +17,7 @@
+ 
+ package org.apache.fluss.predicate;
+ 
++import org.apache.fluss.row.BinaryString;
+ import org.apache.fluss.row.GenericRow;
+ import org.apache.fluss.types.IntType;
+ import org.apache.fluss.types.RowType;
+@@ -354,6 +355,31 @@ public class PredicateTest {
+         assertThat(predicate.test(10, aaab, aaba, new int[] {10})).isEqualTo(false);
+     }
+ 
++    @Test
++    public void testStartWithStatisticsUseBinaryStringOrder() {
++        // Batch statistics min/max are collected with BinaryString#compareTo (UTF-8 byte order,
++        // i.e. code point order). UTF-16 order (String#compareTo) disagrees with it for BMP chars
++        // in U+E000..U+FFFF vs. supplementary chars (e.g. fullwidth forms vs. emoji).
++        BinaryString a = fromString("a");
++        BinaryString fullwidth = fromString("ＡＢ"); // "ＡＢ"
++        BinaryString emoji = fromString("😀"); // U+1F600
++        assertThat(a.compareTo(fullwidth)).isLessThan(0);
++        assertThat(fullwidth.compareTo(emoji)).isLessThan(0);
++
++        // A batch containing {"a", "ＡＢ", "😀"} has min = "a" and max = "😀".
++        PredicateBuilder builder = new PredicateBuilder(RowType.of(new StringType()));
++        Predicate predicate = builder.startsWith(0, fromString("Ａ"));
++        assertThat(predicate.test(GenericRow.of(fullwidth))).isTrue();
++        assertThat(predicate.test(3, row(a), row(emoji), new int[] {0})).isTrue();
++
++        // A batch containing {"Ａ", "😀🎉"} with pattern "😀".
++        Predicate emojiPrefix = builder.startsWith(0, emoji);
++        BinaryString emojiParty = fromString("😀🎉");
++        assertThat(emojiPrefix.test(GenericRow.of(emojiParty))).isTrue();
++        assertThat(emojiPrefix.test(2, row(fromString("Ａ")), row(emojiParty), new int[] {0}))
++                .isTrue();
++    }
++
+     @Test
+     public void testContainsWith() {
+         PredicateBuilder builder = new PredicateBuilder(RowType.of(new StringType()));

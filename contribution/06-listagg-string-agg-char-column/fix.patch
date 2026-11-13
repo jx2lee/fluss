@@ -1,0 +1,173 @@
+diff --git a/fluss-common/src/main/java/org/apache/fluss/metadata/AggFunctionType.java b/fluss-common/src/main/java/org/apache/fluss/metadata/AggFunctionType.java
+index 7fc08e892..aa0ed2318 100644
+--- a/fluss-common/src/main/java/org/apache/fluss/metadata/AggFunctionType.java
++++ b/fluss-common/src/main/java/org/apache/fluss/metadata/AggFunctionType.java
+@@ -165,7 +165,8 @@ public enum AggFunctionType {
+                 return new DataTypeRoot[] {DataTypeRoot.MAP};
+             case LISTAGG:
+             case STRING_AGG:
+-                return new DataTypeRoot[] {DataTypeRoot.STRING, DataTypeRoot.CHAR};
++                // CHAR(n) is fixed-length and cannot hold the concatenated result.
++                return new DataTypeRoot[] {DataTypeRoot.STRING};
+             case SUM:
+             case PRODUCT:
+                 return NUMERIC_TYPES;
+diff --git a/fluss-common/src/test/java/org/apache/fluss/metadata/TableDescriptorTest.java b/fluss-common/src/test/java/org/apache/fluss/metadata/TableDescriptorTest.java
+index c496bb3ec..a975200f7 100644
+--- a/fluss-common/src/test/java/org/apache/fluss/metadata/TableDescriptorTest.java
++++ b/fluss-common/src/test/java/org/apache/fluss/metadata/TableDescriptorTest.java
+@@ -412,6 +412,17 @@ class TableDescriptorTest {
+                         Arrays.deepToString(
+                                 AggFunctionType.HLL_SKETCH.getSupportedDataTypeRoots()));
+ 
++        // CHAR(n) is fixed-length and cannot hold a concatenated result.
++        for (AggFunctionType concatFunction :
++                new AggFunctionType[] {AggFunctionType.LISTAGG, AggFunctionType.STRING_AGG}) {
++            assertThatThrownBy(
++                            () ->
++                                    AggFunctions.of(concatFunction, params)
++                                            .validateDataType(DataTypes.CHAR(10)))
++                    .isInstanceOf(IllegalArgumentException.class)
++                    .hasMessageContaining("column must be part of");
++        }
++
+         // valid case
+         AggFunctions.of(AggFunctionType.LAST_VALUE, params).validateDataType(DataTypes.STRING());
+         AggFunctions.of(AggFunctionType.LISTAGG, params).validateDataType(DataTypes.STRING());
+diff --git a/website/docs/table-design/merge-engines/aggregation.md b/website/docs/table-design/merge-engines/aggregation.md
+index dcbea7ae1..bb5db96a2 100644
+--- a/website/docs/table-design/merge-engines/aggregation.md
++++ b/website/docs/table-design/merge-engines/aggregation.md
+@@ -750,7 +750,7 @@ TableDescriptor.builder()
+ 
+ Concatenates multiple string values into a single string with a delimiter.
+ 
+-- **Supported Data Types**: `STRING`, `CHAR`
++- **Supported Data Types**: `STRING`
+ - **Behavior**: Concatenates values using the specified delimiter
+ - **Null Handling**: Null values are skipped
+ - **Delimiter**: Specify delimiter directly in the aggregation function (default is comma `,`)
+@@ -812,7 +812,7 @@ TableDescriptor.builder()
+ 
+ Alias for `listagg`. Concatenates multiple string values into a single string with a delimiter.
+ 
+-- **Supported Data Types**: `STRING`, `CHAR`
++- **Supported Data Types**: `STRING`
+ - **Behavior**: Same as `listagg` - concatenates values using the specified delimiter
+ - **Null Handling**: Null values are skipped
+ - **Delimiter**: Specify delimiter directly in the aggregation function (default is comma `,`)
+diff --git a/fluss-server/src/test/java/org/apache/fluss/server/kv/rowmerger/aggregate/factory/FieldAggregatorFactoryTest.java b/fluss-server/src/test/java/org/apache/fluss/server/kv/rowmerger/aggregate/factory/FieldAggregatorFactoryTest.java
+new file mode 100644
+index 000000000..a36f63d1c
+--- /dev/null
++++ b/fluss-server/src/test/java/org/apache/fluss/server/kv/rowmerger/aggregate/factory/FieldAggregatorFactoryTest.java
+@@ -0,0 +1,109 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.fluss.server.kv.rowmerger.aggregate.factory;
++
++import org.apache.fluss.metadata.AggFunction;
++import org.apache.fluss.metadata.AggFunctionType;
++import org.apache.fluss.metadata.AggFunctions;
++import org.apache.fluss.types.DataType;
++import org.apache.fluss.types.DataTypeRoot;
++import org.apache.fluss.types.DataTypes;
++
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.EnumSource;
++
++import java.util.Collections;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatNoException;
++
++/** Tests for {@link FieldAggregatorFactory}. */
++class FieldAggregatorFactoryTest {
++
++    /**
++     * Table creation validates aggregation columns against {@link
++     * AggFunctionType#getSupportedDataTypeRoots()}. Every type accepted there must also be accepted
++     * when the aggregator is created on the first write, otherwise the table accepts the DDL but
++     * rejects every write.
++     */
++    @ParameterizedTest
++    @EnumSource(AggFunctionType.class)
++    void testCreateAggregatorForEverySupportedDataType(AggFunctionType type) {
++        AggFunction aggFunction =
++                AggFunctions.of(
++                        type,
++                        type == AggFunctionType.LAST_N
++                                ? Collections.singletonMap(AggFunctions.PARAM_SIZE, "3")
++                                : Collections.emptyMap());
++        FieldAggregatorFactory factory = FieldAggregatorFactory.getFactory(type);
++        assertThat(factory).isNotNull();
++        for (DataTypeRoot root : type.getSupportedDataTypeRoots()) {
++            DataType dataType = sampleType(root);
++            aggFunction.validateDataType(dataType);
++            assertThatNoException()
++                    .as("creating %s aggregator for %s", type, dataType)
++                    .isThrownBy(() -> factory.create(dataType, aggFunction));
++        }
++    }
++
++    private static DataType sampleType(DataTypeRoot root) {
++        switch (root) {
++            case CHAR:
++                return DataTypes.CHAR(10);
++            case STRING:
++                return DataTypes.STRING();
++            case BOOLEAN:
++                return DataTypes.BOOLEAN();
++            case BINARY:
++                return DataTypes.BINARY(10);
++            case BYTES:
++                return DataTypes.BYTES();
++            case DECIMAL:
++                return DataTypes.DECIMAL(10, 2);
++            case TINYINT:
++                return DataTypes.TINYINT();
++            case SMALLINT:
++                return DataTypes.SMALLINT();
++            case INTEGER:
++                return DataTypes.INT();
++            case BIGINT:
++                return DataTypes.BIGINT();
++            case FLOAT:
++                return DataTypes.FLOAT();
++            case DOUBLE:
++                return DataTypes.DOUBLE();
++            case DATE:
++                return DataTypes.DATE();
++            case TIME_WITHOUT_TIME_ZONE:
++                return DataTypes.TIME();
++            case TIMESTAMP_WITHOUT_TIME_ZONE:
++                return DataTypes.TIMESTAMP(3);
++            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
++                return DataTypes.TIMESTAMP_LTZ(3);
++            case ARRAY:
++                return DataTypes.ARRAY(DataTypes.INT());
++            case MAP:
++                return DataTypes.MAP(DataTypes.STRING(), DataTypes.INT());
++            case ROW:
++                return DataTypes.ROW(DataTypes.FIELD("f0", DataTypes.INT()));
++            default:
++                throw new IllegalArgumentException("Unsupported data type root: " + root);
++        }
++    }
++}
