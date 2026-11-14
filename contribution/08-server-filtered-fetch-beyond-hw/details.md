@@ -1,4 +1,4 @@
-# 1. 필터를 건 로그 fetch가 high watermark를 넘어 읽음
+# 8. 필터를 건 로그 fetch가 high watermark를 넘어 읽음
 
 필터(`FilterContext`)를 건 fetch에서 high watermark가 있는 세그먼트의 배치가 전부 걸러지면, `LocalLog#read`가 다음 세그먼트까지 읽는다. 커밋되지 않은 배치가 그대로 클라이언트로 넘어간다.
 

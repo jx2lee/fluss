@@ -1,4 +1,4 @@
-# 3. lookup join에서 BYTES 키가 매칭되지 않음
+# 1. lookup join에서 BYTES 키가 매칭되지 않음
 
 lookup join 키 중 일부는 Fluss 조회 뒤에 클라이언트에서 거르는데, 여기서 `byte[]`를 참조로 비교한다. 그래서 BINARY/VARBINARY/BYTES 키는 한 번도 매칭되지 않는다.
 

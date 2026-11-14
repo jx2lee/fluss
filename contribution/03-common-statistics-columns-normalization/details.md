@@ -1,4 +1,4 @@
-# 5. table.statistics.columns 값이 DDL은 통과하고 append는 전부 실패함
+# 3. table.statistics.columns 값이 DDL은 통과하고 append는 전부 실패함
 
 `table.statistics.columns`를 `' *'`나 `'id,id'`로 지정하면 테이블은 만들어지지만, 그 뒤로는 어떤 클라이언트도 append할 수 없다.
 

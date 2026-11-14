@@ -1,6 +1,6 @@
 # Fluss 기여 초안
 
-**먼저 할 일:** [1번 details.md](01-server-filtered-fetch-beyond-hw/details.md)를 읽고 아래 「올리는 방법」대로 등록한다.
+**먼저 할 일:** [1번 details.md](01-flink-lookup-join-binary-key/details.md)를 읽고 아래 「올리는 방법」대로 등록한다. 번호는 쉬운 순서다.
 
 `apache/fluss` main `67bc81c1ee4fe98c86da558a64236a6fda694528`(2026-11-12)에서 찾은 버그 8개다.
 
@@ -17,18 +17,22 @@
 
 `issue.md`와 `pr.md`는 apache/fluss에 올릴 글이라 영어로 두었다.
 
-## 영향 순 목록
+이 브랜치(`search-known-issues`)에서 빌드하면 RAT가 라이선스 헤더 없는 `fix.patch`를 잡는다. `-Drat.skip=true`를 붙인다.
 
-| # | 버그 | 영향 |
-|---|---|---|
-| [1](01-server-filtered-fetch-beyond-hw/details.md) | 필터를 건 로그 fetch가 high watermark를 넘어 다음 세그먼트까지 읽음 | 커밋 안 된 행 반환, 일부 행 영구 누락 |
-| [2](02-client-multitablewriter-hudi-bucket-key/details.md) | `MultiTableWriter`가 Hudi PK 테이블을 PK 인코딩으로 라우팅 | upsert 예외, 또는 엉뚱한 버킷에 저장 |
-| [3](03-flink-lookup-join-binary-key/details.md) | lookup join이 조회 뒤 `byte[]` 키를 참조로 비교 | BYTES 키 inner join 결과 0건 |
-| [4](04-flink-alter-add-non-physical-column/details.md) | `ALTER TABLE ADD c AS a + 1`이 물리 컬럼을 추가 | 되돌릴 수 없는 스키마 손상(DROP COLUMN 없음) |
-| [5](05-common-statistics-columns-normalization/details.md) | `table.statistics.columns=' *'`/`'id,id'`가 DDL을 통과한 뒤 append 전부 실패 | 테이블은 생기는데 쓸 수 없음 |
-| [6](06-listagg-string-agg-char-column/details.md) | CHAR 컬럼의 `listagg`/`string_agg`가 DDL을 통과한 뒤 쓰기 전부 실패 | 테이블은 생기는데 쓸 수 없음 |
-| [7](07-common-startswith-stats-order/details.md) | `LIKE 'x%'` 통계 검사는 UTF-16 순서, collector는 UTF-8 순서 | 행이 조용히 누락(전각·이모지 혼합) |
-| [8](08-server-local-max-timestamp-reload/details.md) | 활성 세그먼트가 빈 채로 재시작하면 `localMaxTimestamp`가 -1 | timestamp 기준으로 시작하면 과거 데이터 전부 건너뜀 |
+## 난이도 순 목록
+
+| # | 난이도 | 버그 | 영향 | 난이도 근거 |
+|---|---|---|---|---|
+| [1](01-flink-lookup-join-binary-key/details.md) | 쉬움 | lookup join이 조회 뒤 `byte[]` 키를 참조로 비교 | BYTES 키 inner join 결과 0건 | 수정 1줄, 단위 테스트 1개 |
+| [2](02-common-startswith-stats-order/details.md) | 쉬움 | `LIKE 'x%'` 통계 검사는 UTF-16 순서, collector는 UTF-8 순서 | 행이 조용히 누락(전각·이모지 혼합) | 수정 5줄, 단위 테스트 1개 |
+| [3](03-common-statistics-columns-normalization/details.md) | 쉬움 | `table.statistics.columns=' *'`/`'id,id'`가 DDL을 통과한 뒤 append 전부 실패 | 테이블은 생기는데 쓸 수 없음 | 수정 4줄, 단위 테스트 2개 |
+| [4](04-flink-alter-add-non-physical-column/details.md) | 중간 | `ALTER TABLE ADD c AS a + 1`이 물리 컬럼을 추가 | 되돌릴 수 없는 스키마 손상(DROP COLUMN 없음) | Flink IT 필요, "거부 대신 지원" 요청 가능 |
+| [5](05-client-multitablewriter-hudi-bucket-key/details.md) | 중간 | `MultiTableWriter`가 Hudi PK 테이블을 PK 인코딩으로 라우팅 | upsert 예외, 또는 엉뚱한 버킷에 저장 | 클러스터 IT가 무거움 |
+| [6](06-listagg-string-agg-char-column/details.md) | 중간 | CHAR 컬럼의 `listagg`/`string_agg`가 DDL을 통과한 뒤 쓰기 전부 실패 | 테이블은 생기는데 쓸 수 없음 | 설계 선택(DDL 거부)과 DDL 동작 변경 |
+| [7](07-server-local-max-timestamp-reload/details.md) | 어려움 | 활성 세그먼트가 빈 채로 재시작하면 `localMaxTimestamp`가 -1 | timestamp 기준으로 시작하면 과거 데이터 전부 건너뜀 | 서버 시작 경로, 원격 전용 경우가 남음 |
+| [8](08-server-filtered-fetch-beyond-hw/details.md) | 어려움 | 필터를 건 로그 fetch가 high watermark를 넘어 다음 세그먼트까지 읽음 | 커밋 안 된 행 반환, 일부 행 영구 누락 | 핵심 fetch 경로, 열린 PR #4965와 겹침 |
+
+올리는 데 걸리는 시간은 1~3번이 각각 약 20분, 4·5번은 IT 때문에 30~40분이다.
 
 ## 검증 결과(패치 8개를 함께 적용한 상태)
 
@@ -40,10 +44,10 @@
 ## 올리는 방법
 
 ```bash
-git fetch upstream main
-git switch -c fix-filtered-fetch-beyond-hw upstream/main       # 브랜치 이름은 pr.md에 있음
-git apply contribution/01-server-filtered-fetch-beyond-hw/fix.patch
-./mvnw test -pl fluss-server -Dtest=LocalLogTest                # 테스트 이름은 pr.md에 있음
+git fetch upstream main && git fetch origin search-known-issues
+git switch -c fix-lookup-remaining-filter-binary upstream/main   # 브랜치 이름은 pr.md에 있음
+git show origin/search-known-issues:contribution/01-flink-lookup-join-binary-key/fix.patch | git apply
+./mvnw test -pl fluss-flink/fluss-flink-common -Dtest=LookupNormalizerTest   # 테스트 이름은 pr.md에 있음
 ```
 
 1. `issue.md`로 이슈를 등록하고 번호를 적어 둔다.

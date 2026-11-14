@@ -1,4 +1,4 @@
-# 8. 재시작 후 localMaxTimestamp가 -1이 됨
+# 7. 재시작 후 localMaxTimestamp가 -1이 됨
 
 활성 세그먼트가 빈 상태에서 재시작하면 버킷의 `localMaxTimestamp`가 -1이 된다. 그러면 timestamp로 offset을 찾을 때 항상 최신 offset이 나오고 timestamp부터 읽기 시작한 consumer는 남아 있는 데이터를 전부 건너뛴다.
 

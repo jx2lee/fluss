@@ -1,4 +1,4 @@
-# 2. MultiTableWriter가 Hudi PK 테이블을 PK 인코딩으로 라우팅함
+# 5. MultiTableWriter가 Hudi PK 테이블을 PK 인코딩으로 라우팅함
 
 기본 bucket key를 쓰는 PK 테이블에서 `MultiTableWriterImpl`은 PK 인코더를 bucket key 인코더로 그대로 재사용한다. Hudi 테이블에서는 이게 틀리다.
 

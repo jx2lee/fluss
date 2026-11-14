@@ -2,7 +2,7 @@
 
 **Title:** `[server] Do not read beyond the high watermark in filtered log fetch`
 
-**Branch suggestion:** `fix-filtered-fetch-beyond-hw` · **Patch:** `fix.patch` (apply with `git apply contribution/01-server-filtered-fetch-beyond-hw/fix.patch`)
+**Branch suggestion:** `fix-filtered-fetch-beyond-hw` · **Patch:** `fix.patch` (apply with `git apply contribution/08-server-filtered-fetch-beyond-hw/fix.patch`)
 
 ---
 
